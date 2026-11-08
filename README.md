@@ -72,6 +72,19 @@ The planned system has three main parts.
 
 The database, dashboard framework, and export format are being selected. The project concept includes sharing exported files through uWaterloo OneDrive.
 
+## Arduino Libraries
+
+Install the following libraries through the Arduino IDE Library Manager. The versions listed match the team's installed setup.
+
+| Library | Installed Version | Purpose |
+| --- | --- | --- |
+| Adafruit BusIO | 1.17.4 | Communication support for Adafruit libraries using I2C, SPI, and UART. |
+| Adafruit GFX Library | 1.13.0 | Drawing text and graphics on the OLED display. |
+| Adafruit SSD1306 | 2.5.17 | Driver for the SSD1306 OLED display. |
+| Grove - LCD RGB Backlight | 1.0.2 | Control of the Grove LCD display and its RGB backlight. |
+
+The OLED option uses the Adafruit libraries. The Grove LCD option uses the Grove - LCD RGB Backlight library.
+
 ## Team
 
 | Member | Main Responsibilities |
