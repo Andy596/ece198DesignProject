@@ -72,6 +72,39 @@ The planned system has three main parts.
 
 The database, dashboard framework, and export format are being selected. The project concept includes sharing exported files through uWaterloo OneDrive.
 
+## Transfer and Export (Noah)
+
+### Repository layout
+
+| Path | Contents |
+| --- | --- |
+| `SessionLogStation/` | Arduino sketch. Open `SessionLogStation.ino` in the Arduino IDE. `session_log.h/.cpp` hold on-device storage and the USB protocol. |
+| `laptop/` | `sync.bash`, `export.bash`, and double-clickable macOS launchers (`Sync Device.command`, `Export CSV.command`). The SQLite database `session_log.db` is created here. |
+| `sim/` | Host simulator that runs the real sketch, plus tests (`make test`). |
+
+### Hooks for the input code
+
+Call these from the button/knob code in `SessionLogStation.ino`:
+
+- `confirmEntry(participantId, exerciseId, value, technique)` stores an entry and shows the result on the LCD.
+- `undoLastEntry()` removes the newest entry if it has not been synced yet.
+- Lower-level calls in `session_log.h`: `slog::entryCount()`, `slog::getEntry()`, `slog::unsyncedCount()`, `slog::safeToPowerOff()`, `slog::takeEvent()`.
+
+Exercise IDs are indexes into `kExerciseNames` in the sketch and must match the `exercises` table in `laptop/schema.sql`.
+
+### Syncing and exporting
+
+1. Plug the device into the laptop by USB.
+2. Double-click `laptop/Sync Device.command` on macOS, or run `./laptop/sync.bash` on macOS or Linux.
+3. Wait for "Safe to switch off" before powering the device down.
+4. Double-click `Export CSV.command`, or run `./laptop/export.bash [--participant ID]`. CSV files are written to `laptop/exports/`.
+
+Requirements: `bash` and `sqlite3`, both preinstalled on macOS. Windows would need WSL or Git Bash and has not been tested.
+
+### Protocol summary
+
+The protocol is line-based text at 115200 baud. Every line the device sends ends in `*HH`, a CRC-8 checksum (polynomial 0x07). The laptop sends `SYNC`, and the device replies with `BEGIN <boot> <n>`, then `n` lines of `E <boot> <seq> <participant> <exercise> <value> <technique>`, then `END`. The laptop commits all entries to SQLite in one transaction before it replies `ACK <boot> <lastSeq>*HH`. The device then marks the entries as synced and answers `DONE <boot> <lastSeq> <remaining>`. `(boot, seq)` is unique in the database, so re-sending entries never creates duplicates. `boot` is a power-up counter stored in EEPROM.
+
 ## Team
 
 | Member | Main Responsibilities |
