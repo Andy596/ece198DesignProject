@@ -4,7 +4,7 @@
 
 An Arduino-based prototype for recording exercise sessions and transferring those records to a laptop dashboard. Developed for ECE 198 at the University of Waterloo.
 
-**Project status — In development.** The concept is a portable Session Log Station. The features below describe the intended prototype. The display, database, dashboard software, and export format are to be determined.
+**Project status — In development.** The latest local dual-display sketch, `ece198Codes1.0.1.ino`, supports participant profiles, a built-in exercise catalog, and editable technique scores. The repository's `main` branch contains the USB transfer and CSV export demo. Connecting the dual-display interface to USB transfer and the participant dashboard is future work.
 
 ## Problem
 
@@ -18,61 +18,59 @@ Our team is focusing on connecting exercise-session records to each participant'
 
 ## Proposed Solution
 
-The Session Log Station is a portable device that instructors can carry while supervising exercise sessions. Physical controls and a display let instructors select a participant and record exercise information. Entries are held temporarily on the device during a session, then transferred to a laptop through USB.
+The Session Log Station is a portable device instructors can carry while supervising exercise sessions. The Arduino interface lets them select a participant, assign exercises, and record technique scores. The full system is intended to transfer session entries over USB so staff can review exercise history, update plans, and export records. Health professionals remain responsible for exercise dosage decisions.
 
-**Session data must be synced to the laptop or another compatible device before the Arduino is switched off.**
+## Using the Dual-Display Prototype
 
-The laptop application is intended to organize the records by participant, display session history, and support exporting and sharing information. Health professionals remain responsible for exercise dosage decisions.
+The **OLED** shows the participant list, exercise menus, and keyboard. The **Grove LCD** shows scores and button prompts. The live bar at the top right of the OLED shows the potentiometer position on every screen. The centre marks identify the dead zone, which pauses scrolling and score adjustment.
 
-## Intended Workflow
+- **Turn left or right** to scroll or adjust a score. Turning farther from the centre speeds up the changes.
+- **Enter (A0)** selects or saves when the knob is in the dead zone.
+- **Return (A1)** goes back one screen and discards unsaved edits. It works at any knob position.
 
-1. Select a participant using their assigned ID.
-2. Select the exercise and enter session information using the device's controls.
-3. Review the entry on the display and confirm it.
-4. Keep confirmed entries on the device while it is being used away from the laptop.
-5. Connect the device to the laptop through USB and transfer the entries.
-6. Confirm that the transfer succeeded before switching off the Arduino.
-7. Review the records on the dashboard and export them for further use.
+### Add a Participant
 
-## Planned Features
+1. Scroll to **+ Add user** and press Enter.
+2. Enter a name of up to 12 characters. The keyboard automatically capitalizes the first letter of each word.
+3. Enter an optional first exercise of up to five characters, or skip it to record a general **Technique score**.
+4. Enter the initial score from 0 to 100 and save. The keyboard uses `>` to advance or save, `<` to delete, and `^` to cancel.
 
-| Feature | Purpose |
-| --- | --- |
-| Participant selection | Associate each session entry with the correct participant. |
-| Exercise and technique logging | Record exercise values and instructor-entered technique scores. |
-| Display and physical controls | Allow instructors to review and confirm entries on the device. |
-| Temporary session storage | Hold entries during use until they can be transferred before shutdown. |
-| USB transfer | Move recorded entries into the laptop's database. |
-| Participant dashboard | Make exercise plans and session history easier to review and update. |
-| Data export | Support downloading records for spreadsheet use and sharing. |
+The prototype holds up to 10 profiles, including three sample profiles.
+
+### Assign an Exercise and Edit Its Score
+
+1. Open the participant's profile and select **+ Add exercise** at the bottom.
+2. Browse the 55-exercise catalog and press Enter to add an exercise. The LCD shows **Already added** if that profile already has it.
+3. Highlight an exercise in the profile and press Enter. The OLED shows the participant and exercise name while the LCD shows the score.
+4. Turn the knob left to lower the score or right to raise it within the 0–100 range. An exercise with no saved score opens at 0.
+5. Centre the knob and press Enter to save the score, or press Return to discard the edit.
+
+Each profile holds its own assignments and latest scores. **The dual-display sketch stores these changes in RAM.** Resetting the Arduino or switching it off clears new profiles, assignments, and edits.
 
 ## Hardware
 
-| Component | Intended Role |
+| Component | Connection or role |
 | --- | --- |
-| Arduino R4 Minima | Process inputs, manage session entries, and communicate with the laptop. |
-| OLED or Grove LCD display | Show participant selection, exercise values, and confirmation messages. Final selection is pending. |
-| Potentiometer | Scroll through participants and adjust input values. |
-| Three pushbuttons | Select options, confirm entries, and enter technique scores. |
-| Two LEDs with suitable resistors | Indicate input feedback and transfer status. |
+| Arduino Uno R4 Minima | Runs the prototype and reads the controls. |
+| 128 × 64 SSD1306 OLED | Shared I²C bus, address `0x3C`. Shows menus and the knob-position bar. |
+| 16 × 2 Grove RGB LCD | Shared I²C bus. Shows scores and prompts. |
+| Potentiometer | Analog input `A2`. Controls scrolling and score adjustment. |
+| Grove Enter button | `A0`, active HIGH. Selects or saves. |
+| Grove Return button | `A1`, active HIGH. Goes back or cancels. |
 | Breadboard and jumper wires | Connect the prototype circuit. |
-| Portable power source | Power the device while it is carried between participants. |
-| Enclosure | Hold the controls, display, and circuitry. |
-| USB cable and laptop | Transfer records and run the dashboard. |
+| USB cable and laptop | Program the Arduino and run the transfer and export demo. |
 
-The selected display, its required wiring, and the portable power arrangement will be documented with the final circuit.
+Portable power, the enclosure, and hardware transfer indicators are part of the wider prototype design.
 
 ## Software
 
-The planned system has three main parts.
+The dual-display sketch uses `Wire`, the Grove RGB LCD library, Adafruit GFX, and Adafruit SSD1306. In the Arduino IDE, select **Arduino Uno R4 Minima**. To build an archived version, put a copy in its own sketch folder and give the folder and `.ino` file the same name, for example `ece198Codes101/ece198Codes101.ino`. The IDE compiles all `.ino` files in a sketch folder together.
 
-- **Arduino firmware** handles navigation, data entry, display feedback, temporary session storage, and USB communication.
-- **Laptop transfer software** receives entries and saves them to the participant database.
-- **Dashboard software** presents participant records and supports updates and exports.
-
-The database, dashboard framework, and export format are being selected. The project concept includes sharing exported files through uWaterloo OneDrive.
+The repository's transfer demo receives session entries over USB and stores them in SQLite for CSV export. A participant dashboard for viewing plans and exercise history is planned. The project concept includes sharing exported files through uWaterloo OneDrive.
 
 ## Transfer and Export (Noah)
+
+The procedures below apply to the USB transfer demo on the `main` branch. [SessionLogStation demo](https://github.com/Andy596/ece198DesignProject/blob/main/SessionLogStation/SessionLogStation.ino)
 
 ### Repository layout
 
@@ -82,15 +80,15 @@ The database, dashboard framework, and export format are being selected. The pro
 | `laptop/` | `sync.bash`, `export.bash`, and double-clickable macOS launchers (`Sync Device.command`, `Export CSV.command`). The SQLite database `session_log.db` is created here. |
 | `sim/` | Host simulator that runs the real sketch, plus tests (`make test`). |
 
-### Hooks for the input code
+### Hooks for integrating the input code
 
-Call these from the button/knob code in `SessionLogStation.ino`:
+The transfer demo provides these functions.
 
-- `confirmEntry(participantId, exerciseId, value, technique)` stores an entry and shows the result on the LCD.
+- `confirmEntry(participantId, exerciseId, value, technique)` stores a session entry and shows the result on the LCD.
 - `undoLastEntry()` removes the newest entry if it has not been synced yet.
-- Lower-level calls in `session_log.h`: `slog::entryCount()`, `slog::getEntry()`, `slog::unsyncedCount()`, `slog::safeToPowerOff()`, `slog::takeEvent()`.
+- Lower-level calls in `session_log.h` include `slog::entryCount()`, `slog::getEntry()`, `slog::unsyncedCount()`, `slog::safeToPowerOff()`, and `slog::takeEvent()`.
 
-Exercise IDs are indexes into `kExerciseNames` in the sketch and must match the `exercises` table in `laptop/schema.sql`.
+When integrating the two sketches, map participant profiles to database IDs and the OLED exercise catalog to database exercise IDs. The demo's `kExerciseNames` and `laptop/schema.sql` currently use matching IDs for five exercises.
 
 ### Syncing and exporting
 
@@ -116,7 +114,9 @@ The protocol is line-based text at 115200 baud. Every line the device sends ends
 
 ## Prototype Validation
 
-The planned checks are to verify that entries are linked to the selected participant, stay available during a session, and transfer accurately to the laptop before shutdown. The device should show a successful transfer only after the receiving application confirms it. Repeated transfers should preserve existing records without creating duplicates. Exported files should match the saved session data.
+The dual-display sketch compiled for the Arduino Uno R4 Minima. Simulated tests checked both participant creation paths, exercise assignments, score editing and cancellation, Return navigation, and the OLED knob bar.
+
+Planned end-to-end checks include verifying that entries go to the selected participant, stay available during a session, and transfer accurately to the laptop before shutdown. The device should show a successful transfer only after the receiving application confirms it. Repeated transfers should preserve existing records without creating duplicates. Exported files should match the saved session data.
 
 Development and demonstrations should use fictional participant data.
 
