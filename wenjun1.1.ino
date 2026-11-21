@@ -2,6 +2,7 @@
 // The OLED shows menus and knob position. The Grove LCD shows scores and prompts.
 // Turn the knob to scroll, then centre it before pressing Enter (A0).
 // Return (A1) backs out of menus and cancels unsaved edits.
+// Touch the Grove touch sensor (A3) to save the name from the name editor.
 #include <Wire.h>
 #include "rgb_lcd.h"
 #include <Adafruit_GFX.h>
@@ -76,10 +77,11 @@ UserProfile profiles[maxProfiles] = {
   {"Taylor", "Push-ups", 78, {}, 0}
 };
 
-enum Screen { UserList, UserEditor, Profile, Catalog, ScoreEditor };
+enum Screen { UserList, UserEditor, Profile, Catalog, ScoreEditor, DeleteUser, DeleteExercise };
 Screen screen = UserList;
 
 int selectedUser = 0;
+int selectedDeleteUser = 0;
 int selectedExerciseRow = 0;
 int draftScore = 0;  // The stored score changes only when the user presses Save.
 
@@ -104,7 +106,8 @@ int displayedKnobX = -1;
 int scrollDirection = 0;
 unsigned long lastScrollTime = 0;
 
-// Both Grove buttons are active HIGH and debounce independently.
+// Grove buttons and the digital touch sensor are active HIGH.
+// Each input is debounced independently.
 const unsigned long debounceTime = 35;
 
 struct GroveButton {
@@ -139,26 +142,60 @@ struct GroveButton {
 
 GroveButton enterButton(A0);
 GroveButton returnButton(A1);
+GroveButton touchSensor(A3);  // Digital Grove touch sensor: touch = HIGH.
 
-// New-user keyboard. The middle field can be skipped for a technique score.
-enum UserField { NameField, ExerciseField, ScoreField, FieldCount };
-String fields[FieldCount];
-const unsigned int fieldLimits[FieldCount] = {12, 5, 3};
-const char* const fieldPrompts[FieldCount] = {
-  "Enter name", "Enter exercise", "Enter score"
-};
+// Compare names one character at a time, ignoring uppercase/lowercase.
+// If one name is a prefix of another, the shorter name comes first.
+// Return a negative value when first should appear before second.
+int compareNames(const String& first, const String& second) {
+  unsigned int i = 0;
+  while (i < first.length() && i < second.length()) {
+    char a = first[i];
+    char b = second[i];
+    if (a >= 'A' && a <= 'Z') a = a - 'A' + 'a';
+    if (b >= 'A' && b <= 'Z') b = b - 'A' + 'a';
+    if (a < b) return -1;
+    if (a > b) return 1;
+    i++;
+  }
+  if (first.length() < second.length()) return -1;
+  if (first.length() > second.length()) return 1;
+  return 0;
+}
+
+// Insertion sort moves whole profiles so exercises and scores stay attached.
+// Equal names keep their previous order. Menu actions are not sorted.
+void sortUsersAlphabetically() {
+  for (int i = 1; i < profileCount; i++) {
+    int j = i;
+    while (j > 0 && compareNames(profiles[j].name, profiles[j - 1].name) < 0) {
+      UserProfile temporary = profiles[j - 1];
+      profiles[j - 1] = profiles[j];
+      profiles[j] = temporary;
+
+      // Keep the same user highlighted when their index changes.
+      if (selectedUser == j) {
+        selectedUser = j - 1;
+      } else if (selectedUser == j - 1) {
+        selectedUser = j;
+      }
+      j--;
+    }
+  }
+}
+
+// Add user asks for a name only. Scores are entered from the profile later.
+String draftName;
+const unsigned int nameLimit = 12;
+// Name keyboard: letters, space, hyphen, delete, save, and cancel.
 const char letterKeys[] =
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
     "abcdefghijklmnopqrstuvwxyz"
-    "0123456789 -<>^";
-const char numberKeys[] = "0123456789<>^";
-
-int activeField = NameField;
+    " -<>^";
 int selectedKey = 0;
 const char* editorMessage = nullptr;
 
 const char* currentKeys() {
-  return activeField == ScoreField ? numberKeys : letterKeys;
+  return letterKeys;
 }
 
 void startOLED(const char* title) {
@@ -209,47 +246,67 @@ void printScore(int score) {
   lcd.print(maxScore);
 }
 
+// Users are followed by Delete user and Add user, in that order.
 void showUsers() {
   startOLED("CCCare");
-
-  int firstRow = max(0, selectedUser - 1);
-  for (int row = 0; row < 3 && firstRow + row <= profileCount; row++) {
+  int menuSize = profileCount + 2;
+  int firstRow = constrain(selectedUser - 1, 0, max(0, menuSize - 3));
+  for (int row = 0; row < 3 && firstRow + row < menuSize; row++) {
     int index = firstRow + row;
     oled.setCursor(0, 18 + row * 14);
     oled.print(index == selectedUser ? "> " : "  ");
-
     if (index == profileCount) {
+      oled.print("- Delete user");
+    } else if (index == profileCount + 1) {
       oled.print("+ Add user");
     } else {
       oled.print(profiles[index].name);
     }
   }
   refreshOLED(true);
-
   lcd.clear();
   lcd.setCursor(0, 0);
-
   if (selectedUser == profileCount) {
+    lcd.print("Delete user");
+    lcd.setCursor(0, 1);
+    lcd.print(profileCount == 0 ? "No users" : "Press to choose");
+  } else if (selectedUser == profileCount + 1) {
     lcd.print("Add user");
     lcd.setCursor(0, 1);
-    if (profileCount >= maxProfiles) {
-      lcd.print("User list full");
-    } else {
-      lcd.print("Press to add");
-    }
+    lcd.print(profileCount >= maxProfiles ? "User list full" : "Press to add");
   } else {
     const UserProfile& user = profiles[selectedUser];
     lcd.print(user.name);
     lcd.setCursor(0, 1);
-
-    if (user.firstExercise.length() == 0) {
-      lcd.print("Score ");
-    } else {
+    if (user.firstScore != noScore) {
       lcd.print(user.firstExercise);
       lcd.print(" ");
+      printScore(user.firstScore);
+    } else {
+      lcd.print("Press to open");
     }
-    printScore(user.firstScore);
   }
+}
+
+// A separate list lets the user choose which profile to remove.
+// Row zero is Back; the remaining rows are existing users.
+void showDeleteUsers() {
+  startOLED("Delete user");
+  int menuSize = profileCount + 1;
+  int firstRow = constrain(selectedDeleteUser - 1, 0, max(0, menuSize - 3));
+  for (int row = 0; row < 3 && firstRow + row < menuSize; row++) {
+    int index = firstRow + row;
+    oled.setCursor(0, 18 + row * 14);
+    oled.print(index == selectedDeleteUser ? "> " : "  ");
+    oled.print(index == 0 ? "< Back" : profiles[index - 1].name.c_str());
+  }
+  refreshOLED(true);
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print(selectedDeleteUser == 0 ? "Delete user" :
+            profiles[selectedDeleteUser - 1].name.c_str());
+  lcd.setCursor(0, 1);
+  lcd.print(selectedDeleteUser == 0 ? "Press to return" : "Press to delete");
 }
 
 bool alreadyHasExercise(int catalogIndex) {
@@ -267,33 +324,47 @@ bool alreadyHasExercise(int catalogIndex) {
   return false;
 }
 
-// Profile rows are Back, the first score, all assigned exercises, and Add.
-// Catalog rows are Back followed by the 55 available exercises.
+// Default profiles may have an original exercise. New profiles start empty.
+bool hasFirstExercise() {
+  const UserProfile& user = profiles[selectedUser];
+  return user.firstExercise.length() > 0 || user.firstScore != noScore;
+}
+
+int assignedExerciseCount() {
+  return profiles[selectedUser].addedCount + (hasFirstExercise() ? 1 : 0);
+}
+
+// Profile: Back, exercises, Delete exercise, Add exercise.
+// Delete exercise: Back followed by assigned exercises only.
 int exerciseMenuSize() {
   if (screen == Catalog) {
     return catalogCount + 1;
   }
-  return profiles[selectedUser].addedCount + 3;
+  if (screen == DeleteExercise) {
+    return assignedExerciseCount() + 1;
+  }
+  return assignedExerciseCount() + 3;
 }
 
 const char* exerciseRowLabel(int row) {
   if (row == 0) {
     return "< Back";
   }
-
   if (screen == Catalog) {
     return exerciseCatalog[row - 1];
   }
-
+  int count = assignedExerciseCount();
+  if (screen != DeleteExercise) {
+    if (row == count + 1) return "- Delete exercise";
+    if (row == count + 2) return "+ Add exercise";
+  }
   const UserProfile& user = profiles[selectedUser];
-  if (row == 1) {
-    return user.firstExercise.length() == 0
-        ? "Technique score" : user.firstExercise.c_str();
+  if (hasFirstExercise() && row == 1) {
+    return user.firstExercise.length() == 0 ?
+        "Technique score" : user.firstExercise.c_str();
   }
-  if (row == exerciseMenuSize() - 1) {
-    return "+ Add exercise";
-  }
-  return exerciseCatalog[user.addedExercises[row - 2].catalogIndex];
+  int index = row - 1 - (hasFirstExercise() ? 1 : 0);
+  return exerciseCatalog[user.addedExercises[index].catalogIndex];
 }
 
 // A 128px OLED fits 21 characters per line at text size 1.
@@ -331,16 +402,19 @@ void drawExerciseRow(const char* label, int y, bool selected) {
 // Return a reference so reading and saving use the same profile and exercise.
 int8_t& selectedExerciseScore() {
   UserProfile& user = profiles[selectedUser];
-  if (selectedExerciseRow == 1) {
+  if (hasFirstExercise() && selectedExerciseRow == 1) {
     return user.firstScore;
   }
-  return user.addedExercises[selectedExerciseRow - 2].score;
+  int index = selectedExerciseRow - 1 - (hasFirstExercise() ? 1 : 0);
+  return user.addedExercises[index].score;
 }
 
 void showExerciseMenu() {
   const UserProfile& user = profiles[selectedUser];
   bool inCatalog = screen == Catalog;
-  startOLED(inCatalog ? "Add exercise" : user.name.c_str());
+  bool deleting = screen == DeleteExercise;
+  startOLED(inCatalog ? "Add exercise" :
+            deleting ? "Delete ex." : user.name.c_str());
 
   int menuSize = exerciseMenuSize();
   int firstRow = constrain(selectedExerciseRow - 1, 0, max(0, menuSize - 3));
@@ -354,15 +428,20 @@ void showExerciseMenu() {
   lcd.clear();
   lcd.setCursor(0, 0);
   bool onExercise = !inCatalog && selectedExerciseRow > 0 &&
-      selectedExerciseRow < menuSize - 1;
-  lcd.print(onExercise ? "Press to edit" : user.name.c_str());
+      selectedExerciseRow <= assignedExerciseCount();
+  lcd.print(onExercise ? (deleting ? "Delete exercise" : "Press to edit") :
+            user.name.c_str());
   lcd.setCursor(0, 1);
 
   if (selectedExerciseRow == 0) {
     lcd.print("Press to return");
   } else if (inCatalog) {
-    bool exists = alreadyHasExercise(selectedExerciseRow - 1);
-    lcd.print(exists ? "Already added" : "Press to add");
+    lcd.print(alreadyHasExercise(selectedExerciseRow - 1) ?
+              "Already added" : "Press to add");
+  } else if (deleting) {
+    lcd.print("Press to delete");
+  } else if (selectedExerciseRow == assignedExerciseCount() + 1) {
+    lcd.print(assignedExerciseCount() == 0 ? "No exercises" : "Press to choose");
   } else if (selectedExerciseRow == menuSize - 1) {
     lcd.print("Press to browse");
   } else {
@@ -408,21 +487,32 @@ void goBack() {
   switch (screen) {
     case UserList:
       break;
-
     case UserEditor:
+      draftName = "";
+      screen = UserList;
+      showUsers();
+      break;
+    case DeleteUser:
+      screen = UserList;
+      selectedUser = profileCount;
+      showUsers();
+      break;
     case Profile:
       screen = UserList;
       showUsers();
       break;
-
     case Catalog:
       screen = Profile;
       selectedExerciseRow = exerciseMenuSize() - 1;
       showExerciseMenu();
       break;
-
+    case DeleteExercise:
+      screen = Profile;
+      selectedExerciseRow = exerciseMenuSize() - 2;
+      showExerciseMenu();
+      break;
     case ScoreEditor:
-      // Leave the saved score alone and return to the same exercise.
+      // Return discards the draft score.
       screen = Profile;
       showExerciseMenu();
       break;
@@ -435,8 +525,33 @@ void selectExerciseMenuRow() {
     return;
   }
 
+  if (screen == DeleteExercise) {
+    UserProfile& user = profiles[selectedUser];
+    if (hasFirstExercise() && selectedExerciseRow == 1) {
+      user.firstExercise = "";
+      user.firstScore = noScore;
+    } else {
+      int index = selectedExerciseRow - 1 - (hasFirstExercise() ? 1 : 0);
+      for (int i = index; i < user.addedCount - 1; i++) {
+        user.addedExercises[i] = user.addedExercises[i + 1];
+      }
+      user.addedCount--;
+    }
+    screen = Profile;
+    selectedExerciseRow = exerciseMenuSize() - 2;
+    showExerciseMenu();
+    return;
+  }
+
   if (screen == Profile) {
-    if (selectedExerciseRow == exerciseMenuSize() - 1) {
+    int count = assignedExerciseCount();
+    if (selectedExerciseRow == count + 1) {
+      if (count > 0) {
+        screen = DeleteExercise;
+        selectedExerciseRow = 1;
+        showExerciseMenu();
+      }
+    } else if (selectedExerciseRow == count + 2) {
       screen = Catalog;
       selectedExerciseRow = 1;
       showExerciseMenu();
@@ -448,69 +563,50 @@ void selectExerciseMenuRow() {
 
   UserProfile& user = profiles[selectedUser];
   int catalogIndex = selectedExerciseRow - 1;
-  if (alreadyHasExercise(catalogIndex)) {
+  if (alreadyHasExercise(catalogIndex) || user.addedCount >= catalogCount) {
     return;
   }
-
-  // Append an unscored assignment and return with that row highlighted.
+  // New assignments have no score until edited from the profile.
   AssignedExercise& exercise = user.addedExercises[user.addedCount];
   exercise.catalogIndex = catalogIndex;
   exercise.score = noScore;
   user.addedCount++;
   screen = Profile;
-  selectedExerciseRow = user.addedCount + 1;
+  selectedExerciseRow = assignedExerciseCount();
   showExerciseMenu();
 }
 
+// The new-user editor contains only a name field.
 void showKeyboard() {
   const char* keys = currentKeys();
   int keyCount = strlen(keys);
   char key = keys[selectedKey];
-  startOLED(fieldPrompts[activeField]);
+  startOLED("Enter name");
+  oled.setCursor(0, 16);
+  oled.print(draftName);
 
-  // Two lines keep the full 12-character name and remaining fields visible.
-  oled.setCursor(0, 12);
-  oled.print(fields[NameField]);
-  oled.setCursor(0, 21);
-  if (fields[ExerciseField].length() > 0) {
-    oled.print(fields[ExerciseField]);
-    oled.print(",");
-  }
-  oled.print(fields[ScoreField]);
-
-  // Show five keys with the selected key in the middle.
   for (int position = 0; position < 5; position++) {
     int index = (selectedKey + position - 2 + keyCount) % keyCount;
     int x = position * 25;
-
     if (position == 2) {
       oled.fillRect(x, 32, 23, 20, SSD1306_WHITE);
       oled.setTextColor(SSD1306_BLACK);
     } else {
       oled.setTextColor(SSD1306_WHITE);
     }
-
     oled.setTextSize(2);
     oled.setCursor(x + 5, 34);
     oled.print(keys[index]);
   }
-
   oled.setTextSize(1);
   oled.setTextColor(SSD1306_WHITE);
   oled.setCursor(0, 56);
-
   if (editorMessage != nullptr) {
     oled.print(editorMessage);
   } else if (key == '<') {
     oled.print("Button: delete");
   } else if (key == '>') {
-    if (activeField == ScoreField) {
-      oled.print("Button: save user");
-    } else if (activeField == ExerciseField && fields[ExerciseField].length() == 0) {
-      oled.print("Button: skip exercise");
-    } else {
-      oled.print("Button: next field");
-    }
+    oled.print("Button: save user");
   } else if (key == '^') {
     oled.print("Button: cancel");
   } else if (key == ' ') {
@@ -520,90 +616,92 @@ void showKeyboard() {
     oled.print(key);
   }
   refreshOLED(true);
-
   lcd.clear();
   lcd.setCursor(0, 0);
-  lcd.print(activeField == ExerciseField ? "Exercise (opt.)" : fieldPrompts[activeField]);
+  lcd.print("Enter name");
   lcd.setCursor(0, 1);
-  lcd.print(fields[activeField]);
+  lcd.print(draftName);
 }
 
 void startAddingUser() {
   screen = UserEditor;
-  activeField = NameField;
   selectedKey = 0;
   editorMessage = nullptr;
-  for (String& field : fields) {
-    field = "";
-  }
+  draftName = "";
   showKeyboard();
+}
+
+// Save a name from either the > key or the touch sensor.
+// Touch saves regardless of knob position, but still validates the name.
+void saveNewUser() {
+  editorMessage = nullptr;
+  draftName.trim();
+  if (draftName.length() == 0) {
+    editorMessage = "Name is empty";
+  } else if (profileCount >= maxProfiles) {
+    editorMessage = "User list full";
+  } else {
+    // Reset the entire slot: deleted profiles must not leave old data.
+    profiles[profileCount] = UserProfile{};
+    UserProfile& user = profiles[profileCount];
+    user.name = draftName;
+    user.firstScore = noScore;
+    selectedUser = profileCount;
+    profileCount++;
+    sortUsersAlphabetically();  // Sort immediately after saving a name.
+    draftName = "";
+    screen = UserList;
+    showUsers();
+    return;
+  }
+  showKeyboard();  // Show feedback if the name is empty or the list is full.
 }
 
 void enterKey() {
   char key = currentKeys()[selectedKey];
   editorMessage = nullptr;
-
   if (key == '^') {
     goBack();
     return;
   }
-
   if (key == '<') {
-    if (fields[activeField].length() > 0) {
-      fields[activeField].remove(fields[activeField].length() - 1);
-    } else if (activeField > NameField) {
-      activeField--;
-      selectedKey = 0;
+    if (draftName.length() > 0) {
+      draftName.remove(draftName.length() - 1);
     }
   } else if (key == '>') {
-    fields[activeField].trim();
-
-    if (fields[activeField].length() == 0 && activeField != ExerciseField) {
-      editorMessage = "Field is empty";
-    } else if (activeField < ScoreField) {
-      activeField++;
-      // Preselect > on the optional field for a quick name-and-score entry.
-      selectedKey = activeField == ExerciseField ? strlen(letterKeys) - 2 : 0;
-    } else {
-      int score = fields[ScoreField].toInt();
-
-      if (score > maxScore) {
-        editorMessage = "Score must be 0-100";
-      } else if (profileCount >= maxProfiles) {
-        editorMessage = "User list full";
-      } else {
-        UserProfile& user = profiles[profileCount];
-        user.name = fields[NameField];
-        user.firstExercise = fields[ExerciseField];
-        user.firstScore = score;
-        user.addedCount = 0;
-
-        selectedUser = profileCount;
-        profileCount++;
-        screen = UserList;
-        showUsers();
-        return;
-      }
-    }
-  } else if (fields[activeField].length() < fieldLimits[activeField]) {
-    String& field = fields[activeField];
-    // Capitalize the first letter of each name word. The letter keyboard
-    // also supports explicit uppercase letters elsewhere in a name.
-    if (activeField == NameField && key >= 'a' && key <= 'z' &&
-        (field.length() == 0 || field[field.length() - 1] == ' ')) {
+    saveNewUser();
+    return;
+  } else if (draftName.length() < nameLimit) {
+    // Uppercase the first letter after the start or a space.
+    if (key >= 'a' && key <= 'z' &&
+        (draftName.length() == 0 || draftName[draftName.length() - 1] == ' ')) {
       key = key - 'a' + 'A';
     }
-    field += key;
+    draftName += key;
   } else {
     editorMessage = "Limit reached: use >";
   }
-
   showKeyboard();
 }
 
+void deleteSelectedUser() {
+  int index = selectedDeleteUser - 1;
+  for (int i = index; i < profileCount - 1; i++) {
+    profiles[i] = profiles[i + 1];
+  }
+  profileCount--;
+  profiles[profileCount] = UserProfile{};
+  profiles[profileCount].firstScore = noScore;
+  screen = UserList;
+  selectedUser = profileCount;  // Highlight Delete user after deletion.
+  showUsers();
+}
+
 void setup() {
+  sortUsersAlphabetically();  // Keep the initial profiles sorted too.
   enterButton.begin();
   returnButton.begin();
+  touchSensor.begin();
 
   Wire.begin();
   lcd.begin(16, 2);
@@ -621,6 +719,7 @@ void loop() {
   unsigned long now = millis();
   bool pressed = enterButton.pressed(now);
   bool back = returnButton.pressed(now);
+  bool touched = touchSensor.pressed(now);
 
   int direction = 0;
   unsigned long interval = slowScrollInterval;
@@ -656,22 +755,51 @@ void loop() {
   switch (screen) {
     case UserList:
       if (shouldStep) {
-        int menuSize = profileCount + 1;
-        selectedUser = (selectedUser + direction + menuSize) % menuSize;
-        showUsers();
+        // Stop at the first user and at Add user; never wrap the menu.
+        int next = constrain(selectedUser + direction, 0, profileCount + 1);
+        if (next != selectedUser) {
+          selectedUser = next;
+          showUsers();
+        }
       }
       if (enter) {
         if (selectedUser < profileCount) {
           screen = Profile;
           selectedExerciseRow = 1;
           showExerciseMenu();
+        } else if (selectedUser == profileCount) {
+          if (profileCount > 0) {
+            screen = DeleteUser;
+            selectedDeleteUser = 1;
+            showDeleteUsers();
+          }
         } else if (profileCount < maxProfiles) {
           startAddingUser();
         }
       }
       break;
 
+    case DeleteUser:
+      if (shouldStep) {
+        int next = constrain(selectedDeleteUser + direction, 0, profileCount);
+        if (next != selectedDeleteUser) {
+          selectedDeleteUser = next;
+          showDeleteUsers();
+        }
+      }
+      if (enter) {
+        if (selectedDeleteUser == 0) goBack();
+        else deleteSelectedUser();
+      }
+      break;
+
     case UserEditor:
+      // Save before processing keyboard scrolling or Enter.
+      // A held touch produces only one event; release before touching again.
+      if (touched) {
+        saveNewUser();
+        break;
+      }
       if (shouldStep) {
         int keyCount = strlen(currentKeys());
         selectedKey = (selectedKey + direction + keyCount) % keyCount;
@@ -685,6 +813,7 @@ void loop() {
 
     case Profile:
     case Catalog:
+    case DeleteExercise:
       if (shouldStep) {
         int next = constrain(selectedExerciseRow + direction,
                              0, exerciseMenuSize() - 1);
