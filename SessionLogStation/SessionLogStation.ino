@@ -37,6 +37,12 @@ unsigned long lastScrollTime = 0;
 const int buttonPin = A0;
 const int buttonPressedLevel = HIGH;
 
+// Grove Return button connected to A1, pressed = HIGH.
+const int returnButtonPin = A1;
+int lastReturnReading = LOW;
+int stableReturnReading = LOW;
+unsigned long lastReturnChange = 0;
+
 int lastButtonReading = LOW;
 int stableButtonReading = LOW;
 
@@ -74,6 +80,24 @@ bool buttonPressed() {
     stableButtonReading = reading;
 
     return stableButtonReading == buttonPressedLevel;
+  }
+
+  return false;
+}
+
+bool returnButtonPressed() {
+  int reading = digitalRead(returnButtonPin);
+  unsigned long now = millis();
+
+  if (reading != lastReturnReading) {
+    lastReturnChange = now;
+    lastReturnReading = reading;
+  }
+
+  if (now - lastReturnChange >= debounceTime &&
+      reading != stableReturnReading) {
+    stableReturnReading = reading;
+    return stableReturnReading == HIGH;
   }
 
   return false;
@@ -338,6 +362,9 @@ void enterKey() {
 
 void setup() {
   pinMode(buttonPin, INPUT);
+  pinMode(returnButtonPin, INPUT);
+  lastReturnReading = digitalRead(returnButtonPin);
+  stableReturnReading = lastReturnReading;
 
   lastButtonReading = digitalRead(buttonPin);
   stableButtonReading = lastButtonReading;
@@ -359,6 +386,7 @@ void loop() {
   int knob = knobMax - analogRead(A2);
   unsigned long now = millis();
   bool pressed = buttonPressed();
+  bool returnPressed = returnButtonPressed();
 
   int direction = 0;
   unsigned long interval = slowScrollInterval;
@@ -398,6 +426,17 @@ void loop() {
   }
 
   if (addingUser) {
+    // Return cancels from any field, even while the knob is moving.
+    // Handle Return before Enter so an unfinished record cannot be saved.
+    if (returnPressed) {
+      for (int i = 0; i < 3; i++) {
+        fields[i] = "";
+      }
+      editorMessage = "";
+      finishEditing();
+      return;
+    }
+
     if (shouldStep) {
       int keyCount = strlen(currentKeys());
 
