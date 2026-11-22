@@ -1,4 +1,4 @@
-// session_log.cpp - see session_log.h for the API and PROTOCOL.md for the wire format.
+// session_log.cpp - see session_log.h for the API and the README for the wire format.
 #include "session_log.h"
 
 #include <stdio.h>
@@ -25,6 +25,7 @@ uint16_t g_syncedCount = 0;  // entries [0, g_syncedCount) are on the laptop
 uint16_t g_nextSeq = 0;
 uint32_t g_bootId = 0;
 WriteFn g_write = nullptr;
+CommandFn g_handler = nullptr;
 
 char g_line[kLineMax + 1];
 size_t g_lineLen = 0;
@@ -228,6 +229,8 @@ void handleLine(const char* line, size_t len, uint32_t nowMs) {
       return;
     }
     handleAck(payload, payloadLen);
+  } else if (g_handler != nullptr && g_handler(payload, payloadLen, crcLen >= 0, nowMs)) {
+    // Handled (and answered) by the registered module.
   } else {
     sendError("unknown_command");
     pushEvent(Event::ProtocolError);
@@ -268,6 +271,7 @@ void begin(uint32_t bootId, WriteFn write) {
   g_nextSeq = 0;
   g_bootId = bootId;
   g_write = write;
+  g_handler = nullptr;
   g_lineLen = 0;
   g_lineOverflow = false;
   g_awaitingAck = false;
@@ -332,6 +336,19 @@ bool safeToPowerOff() { return g_count == g_syncedCount; }
 bool awaitingAck() { return g_awaitingAck; }
 uint16_t lastSyncCount() { return g_lastSyncCount; }
 uint32_t bootId() { return g_bootId; }
+
+void setCommandHandler(CommandFn handler) { g_handler = handler; }
+
+void sendFramed(const char* payload) {
+  if (payload == nullptr) {
+    return;
+  }
+  size_t len = 0;
+  while (len < kOutMax && payload[len] != '\0') {  // bounded strlen
+    ++len;
+  }
+  sendLine(payload, static_cast<int>(len));
+}
 
 void feed(char c, uint32_t nowMs) {
   if (c == '\r') {
