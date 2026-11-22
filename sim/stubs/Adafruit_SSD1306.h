@@ -26,6 +26,13 @@ class Adafruit_SSD1306 {
   void print(const char* text);
   void print(char c);
   void print(int value);
+  void print(unsigned int value);
+  void print(long value);
+  void print(unsigned long value);
+  template <class S, class = decltype(static_cast<const S*>(nullptr)->c_str())>
+  void print(const S& text) {
+    print(text.c_str());
+  }
   void display();
   void fillRect(int x, int y, int w, int h, uint16_t color);
   void drawRect(int x, int y, int w, int h, uint16_t color);

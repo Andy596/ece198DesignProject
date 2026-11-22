@@ -5,15 +5,20 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
+
+#include <string>
 
 constexpr int A0 = 14;
 constexpr int A1 = 15;
 constexpr int A2 = 16;
+constexpr int A3 = 17;
 constexpr int LOW = 0;
 constexpr int HIGH = 1;
 constexpr int INPUT = 0;
 
 uint32_t millis();
+uint32_t micros();
 void delay(unsigned long ms);
 int analogRead(int pin);
 int digitalRead(int pin);
@@ -43,6 +48,39 @@ class SimSerial {
   int available();
   int read();
   size_t write(const uint8_t* data, size_t len);
+  int availableForWrite();
+  explicit operator bool() const;  // false when no USB host is connected
+};
+
+// The subset of Arduino's String class the sketches use, backed by std::string.
+class String {
+ public:
+  String() = default;
+  String(const char* text) : s_(text != nullptr ? text : "") {}  // NOLINT: implicit like Arduino
+  unsigned int length() const { return static_cast<unsigned int>(s_.size()); }
+  const char* c_str() const { return s_.c_str(); }
+  char operator[](unsigned int i) const { return i < s_.size() ? s_[i] : '\0'; }
+  String& operator+=(char c) {
+    s_ += c;
+    return *this;
+  }
+  bool equalsIgnoreCase(const char* other) const { return strcasecmp(s_.c_str(), other) == 0; }
+  bool equalsIgnoreCase(const String& other) const { return equalsIgnoreCase(other.c_str()); }
+  void remove(unsigned int index) {
+    if (index < s_.size()) s_.erase(index);
+  }
+  void trim() {
+    const size_t start = s_.find_first_not_of(" \t\r\n");
+    if (start == std::string::npos) {
+      s_.clear();
+      return;
+    }
+    s_ = s_.substr(start, s_.find_last_not_of(" \t\r\n") - start + 1);
+  }
+  bool operator==(const char* other) const { return s_ == other; }
+
+ private:
+  std::string s_;
 };
 extern SimSerial Serial;
 
@@ -54,4 +92,5 @@ extern uint32_t g_simVirtualMs;
 extern uint32_t g_simOffsetMs;
 extern int g_simAnalog;     // raw reading returned by analogRead()
 extern int g_simPins[32];   // levels returned by digitalRead()
+extern bool g_simUsbConnected;  // what `if (Serial)` reports
 extern const char* g_simEepromPath;  // file backing EEPROM, or nullptr

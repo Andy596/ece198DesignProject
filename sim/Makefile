@@ -1,57 +1,42 @@
 # Host builds for testing without the board.
-#   make test      all unit, UI and end-to-end tests
-#   make sim       build both simulators only
+#   make test      every test: firmware simulators, protocol, laptop database
+#   make sim       build the simulators only
 CXX ?= g++
 WARN = -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion -Werror
 SAN  = -fsanitize=address,undefined -fno-sanitize-recover=all -g
 OLD  = ../SessionLogStation
-NEW  = ../ece198Codes1.0.2
 CXXFLAGS = -std=c++17 -O1 $(WARN) $(SAN)
 # Sketches are compiled with the stub headers. -Wconversion is relaxed for
-# sketch code, which follows Arduino style (int everywhere).
-SKETCHFLAGS = -std=c++17 -O1 -Wall -Wextra -Wshadow -Werror $(SAN) -Istubs
-STUBS = stubs/sim_hw.cpp
+# sketch code (Arduino style). -Wno-format-truncation: on the host `long` is
+# 64-bit, so GCC sizes %lu for 20 digits; on the R4 it is 32-bit and fits.
+SKETCHFLAGS = -std=c++17 -O1 -Wall -Wextra -Wshadow -Werror -Wno-format-truncation $(SAN) -Istubs
+STUBS = stubs/sim_hw.cpp stubs/sim_pty.cpp
 STUBH = $(wildcard stubs/*.h)
 
-.PHONY: all sim test unit clean check-copies
-all: test_session_log test_profile_store test_ui sim_device sim_ui_device
+.PHONY: all sim test clean
+all: test_session_log sim_device sim_dosage_device sim_dosage_device_107
 
 test_session_log: test_session_log.cpp $(OLD)/session_log.cpp $(OLD)/session_log.h
 	$(CXX) $(CXXFLAGS) -I$(OLD) -o $@ test_session_log.cpp $(OLD)/session_log.cpp
 
-test_profile_store: test_profile_store.cpp $(NEW)/profile_store.cpp $(NEW)/profile_store.h
-	$(CXX) $(CXXFLAGS) -I$(NEW) -o $@ test_profile_store.cpp $(NEW)/profile_store.cpp
+# Original SessionLogStation transfer demo.
+sim_device: sim_device.cpp $(OLD)/SessionLogStation.ino $(OLD)/session_log.cpp $(STUBS) $(STUBH)
+	$(CXX) $(SKETCHFLAGS) -I$(OLD) -o $@ sim_device.cpp $(STUBS) $(OLD)/session_log.cpp
 
-# Original transfer demo sketch.
-sim_device: sim_device.cpp $(OLD)/SessionLogStation.ino $(OLD)/session_log.cpp stubs/sim_pty.cpp $(STUBS) $(STUBH)
-	$(CXX) $(SKETCHFLAGS) -I$(OLD) -o $@ sim_device.cpp stubs/sim_pty.cpp $(STUBS) $(OLD)/session_log.cpp
+# Dosage firmware 1.0.8 (current) and 1.0.7 (to test that it is refused).
+sim_dosage_device: sim_dosage_device.cpp ../ece198Codes108/ece198Codes108.ino $(STUBS) $(STUBH)
+	$(CXX) $(SKETCHFLAGS) -I../ece198Codes108 -DHAS_IDENTITY -o $@ sim_dosage_device.cpp $(STUBS)
 
-# Merged 1.0.2 sketch over a pty, for the end-to-end tests.
-sim_ui_device: sim_ui_device.cpp $(NEW)/*.ino $(NEW)/*.cpp $(NEW)/*.h stubs/sim_pty.cpp $(STUBS) $(STUBH)
-	$(CXX) $(SKETCHFLAGS) -I$(NEW) -o $@ sim_ui_device.cpp stubs/sim_pty.cpp $(STUBS) \
-	  $(NEW)/session_log.cpp $(NEW)/profile_store.cpp
+sim_dosage_device_107: sim_dosage_device.cpp ../ece198Codes1.0.7.ino $(STUBS) $(STUBH)
+	$(CXX) $(SKETCHFLAGS) -I.. -DSKETCH='"ece198Codes1.0.7.ino"' -o $@ sim_dosage_device.cpp $(STUBS)
 
-# Merged 1.0.2 sketch in-process with virtual time, for UI tests and fuzzing.
-test_ui: test_ui.cpp $(NEW)/*.ino $(NEW)/*.cpp $(NEW)/*.h $(STUBS) $(STUBH)
-	$(CXX) $(SKETCHFLAGS) -I$(NEW) -o $@ test_ui.cpp $(STUBS) \
-	  $(NEW)/session_log.cpp $(NEW)/profile_store.cpp
+sim: sim_device sim_dosage_device sim_dosage_device_107
 
-sim: sim_device sim_ui_device
-
-# The two sketch folders each need their own copy of session_log (the Arduino
-# IDE only compiles files inside the sketch folder). Keep them identical.
-check-copies:
-	cmp $(OLD)/session_log.h $(NEW)/session_log.h
-	cmp $(OLD)/session_log.cpp $(NEW)/session_log.cpp
-
-unit: check-copies test_session_log test_profile_store test_ui
+test: all
 	./test_session_log
-	./test_profile_store
-	./test_ui
-
-test: unit sim_device sim_ui_device
 	./test_end_to_end.bash
-	./test_ui_end_to_end.bash
+	cd ../laptop && python3 test_dosage_db.py
+	python3 test_dosage_end_to_end.py
 
 clean:
-	rm -f test_session_log test_profile_store test_ui sim_device sim_ui_device
+	rm -f test_session_log sim_device sim_dosage_device sim_dosage_device_107

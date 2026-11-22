@@ -9,6 +9,8 @@ struct SimPtyFaults {
   bool dropAckOnce = false;       // swallow the first ACK line from the laptop
   bool corruptEntryOnce = false;  // flip a digit in the first "E ..." line sent
   bool mute = false;              // never send anything
+  bool dropCompletedOnce = false; // silently lose the first "completed" row
+  bool stallWrites = false;       // availableForWrite() always 0 (host stopped reading)
 };
 extern SimPtyFaults g_simFaults;
 

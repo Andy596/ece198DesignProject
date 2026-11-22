@@ -11,6 +11,13 @@ class rgb_lcd {
   void setCursor(uint8_t col, uint8_t row);
   void print(const char* text);
   void print(int value);
+  void print(unsigned int value);
+  void print(long value);
+  void print(unsigned long value);
+  template <class S, class = decltype(static_cast<const S*>(nullptr)->c_str())>
+  void print(const S& text) {
+    print(text.c_str());
+  }
 
   // --- Simulator only -------------------------------------------------------
   // Log the screen to stderr if it changed since the last call.

@@ -59,6 +59,10 @@ void rxFromLaptop(char c) {
 
 void SimSerial::begin(unsigned long) {}
 
+SimSerial::operator bool() const { return g_simUsbConnected; }
+
+int SimSerial::availableForWrite() { return g_simFaults.stallWrites ? 0 : 64; }
+
 int SimSerial::available() { return static_cast<int>(g_rxCount); }
 
 int SimSerial::read() {
@@ -75,11 +79,16 @@ size_t SimSerial::write(const uint8_t* data, size_t len) {
   if (g_simFaults.mute) {
     return len;
   }
-  char buf[128];
+  char buf[256];
   if (len > sizeof buf) {
-    return 0;
+    len = sizeof buf;  // like a USB buffer: accept what fits, the caller retries the rest
   }
   memcpy(buf, data, len);
+  if (g_simFaults.dropCompletedOnce && len > 10 && memcmp(buf, "completed,", 10) == 0) {
+    g_simFaults.dropCompletedOnce = false;  // report success, send nothing: a lost row
+    fprintf(stderr, "SIM: dropped a completed row\n");
+    return len;
+  }
   if (g_simFaults.corruptEntryOnce && len > 4 && buf[0] == 'E' && buf[1] == ' ') {
     g_simFaults.corruptEntryOnce = false;
     buf[2] = (buf[2] == '9') ? '8' : static_cast<char>(buf[2] + 1);  // flip a digit

@@ -15,6 +15,7 @@ uint32_t g_simVirtualMs = 0;
 uint32_t g_simOffsetMs = 0;
 int g_simAnalog = 0;
 int g_simPins[32] = {};
+bool g_simUsbConnected = true;
 const char* g_simEepromPath = nullptr;
 
 TwoWire Wire;
@@ -29,6 +30,17 @@ uint32_t millis() {
   const unsigned long long ms = static_cast<unsigned long long>(ts.tv_sec) * 1000ULL +
                                 static_cast<unsigned long long>(ts.tv_nsec) / 1000000ULL;
   return static_cast<uint32_t>(ms) + g_simOffsetMs;
+}
+
+uint32_t micros() {
+  if (g_simVirtualTime) {
+    return g_simVirtualMs * 1000U;
+  }
+  timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  const unsigned long long us = static_cast<unsigned long long>(ts.tv_sec) * 1000000ULL +
+                                static_cast<unsigned long long>(ts.tv_nsec) / 1000ULL;
+  return static_cast<uint32_t>(us) + g_simOffsetMs * 1000U;
 }
 
 void delay(unsigned long ms) {
@@ -101,8 +113,23 @@ void rgb_lcd::print(const char* text) {
   }
 }
 void rgb_lcd::print(int value) {
-  char buf[12];
+  char buf[24];
   snprintf(buf, sizeof buf, "%d", value);
+  print(buf);
+}
+void rgb_lcd::print(unsigned int value) {
+  char buf[24];
+  snprintf(buf, sizeof buf, "%u", value);
+  print(buf);
+}
+void rgb_lcd::print(long value) {
+  char buf[24];
+  snprintf(buf, sizeof buf, "%ld", value);
+  print(buf);
+}
+void rgb_lcd::print(unsigned long value) {
+  char buf[24];
+  snprintf(buf, sizeof buf, "%lu", value);
   print(buf);
 }
 void rgb_lcd::flushToLog() {
@@ -173,8 +200,23 @@ void Adafruit_SSD1306::print(const char* text) {
 }
 void Adafruit_SSD1306::print(char c) { putChar(c); }
 void Adafruit_SSD1306::print(int value) {
-  char buf[12];
+  char buf[24];
   snprintf(buf, sizeof buf, "%d", value);
+  print(buf);
+}
+void Adafruit_SSD1306::print(unsigned int value) {
+  char buf[24];
+  snprintf(buf, sizeof buf, "%u", value);
+  print(buf);
+}
+void Adafruit_SSD1306::print(long value) {
+  char buf[24];
+  snprintf(buf, sizeof buf, "%ld", value);
+  print(buf);
+}
+void Adafruit_SSD1306::print(unsigned long value) {
+  char buf[24];
+  snprintf(buf, sizeof buf, "%lu", value);
   print(buf);
 }
 
