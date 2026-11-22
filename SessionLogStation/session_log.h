@@ -18,8 +18,6 @@
 //   slog::entryCount() / getEntry(i, out)   to show entries on the display
 //   slog::unsyncedCount() / safeToPowerOff() for a "sync before off" warning
 //   slog::takeEvent()             to show "Syncing..." / "Synced N" / errors
-//   slog::setCommandHandler(fn)   optional: route extra laptop commands
-//                                 (e.g. profile download) to another module
 // ---------------------------------------------------------------------------
 #pragma once
 
@@ -65,18 +63,9 @@ enum class Event : uint8_t {
 
 using WriteFn = void (*)(const char* text, size_t len);
 
-// Handler for laptop commands this module does not know. `payload` is
-// NUL-terminated and excludes the "*HH" suffix when the CRC was valid; when
-// crcValid is false it is the whole raw line. Return true if the command was
-// recognised (the handler sends its own reply); false makes this module answer
-// "ERR unknown_command".
-using CommandFn = bool (*)(const char* payload, size_t len, bool crcValid, uint32_t nowMs);
-
 // Call once. bootId must change on every power-up (the sketch keeps a counter
 // in EEPROM) so that the laptop can tell entries from different boots apart.
-// begin() clears any command handler; set it afterwards.
 void begin(uint32_t bootId, WriteFn write);
-void setCommandHandler(CommandFn handler);
 
 // --- Entry hooks ----------------------------------------------------------
 Status addEntry(uint16_t participantId, uint8_t exerciseId, int16_t value,
@@ -96,9 +85,6 @@ bool awaitingAck();
 Event takeEvent();                  // returns and clears the oldest event
 uint16_t lastSyncCount();           // entries confirmed by the last ACK
 uint32_t bootId();
-// Sends "payload*HH\n" to the laptop. Silently drops payloads that are empty
-// or too long for one protocol line.
-void sendFramed(const char* payload);
 
 // --- Shared with tests and the laptop script --------------------------------
 // CRC-8, polynomial 0x07, initial value 0x00, no reflection.

@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# export.bash - write saved scores to a CSV file for Excel / OneDrive.
-# One row per saved score, oldest first within each participant.
+# export.bash - write session entries to a CSV file for Excel / OneDrive.
 #
 # Usage: ./export.bash [--participant ID] [--db FILE] [--out FILE]
 #   Without --participant, every entry is exported.
@@ -19,7 +18,7 @@ while [ $# -gt 0 ]; do
     --participant) PARTICIPANT="${2:-}"; shift 2 ;;
     --db) DB="${2:-}"; shift 2 ;;
     --out) OUT="${2:-}"; shift 2 ;;
-    -h|--help) sed -n '2,8p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,7p' "$0"; exit 0 ;;
     *) die "unknown option: $1 (try --help)" ;;
   esac
 done
@@ -44,10 +43,10 @@ fi
 
 QUERY="SELECT e.participant_id   AS participant_id,
               p.label            AS participant_label,
-              e.exercise_id      AS exercise_id,
               x.name             AS exercise,
-              e.technique        AS score,
-              e.received_at      AS synced_at,
+              e.value            AS value,
+              e.technique        AS technique_score,
+              e.received_at      AS received_at,
               e.boot             AS device_boot,
               e.seq              AS device_seq
        FROM entries e
@@ -60,7 +59,7 @@ sqlite3 -bail -csv -header "$DB" "$QUERY" > "$OUT" || die "export failed"
 
 if [ ! -s "$OUT" ]; then
   # sqlite3 prints no header for an empty result; write one so the file still opens cleanly.
-  echo "participant_id,participant_label,exercise_id,exercise,score,synced_at,device_boot,device_seq" > "$OUT"
+  echo "participant_id,participant_label,exercise,value,technique_score,received_at,device_boot,device_seq" > "$OUT"
 fi
 ROWS=$(( $(wc -l < "$OUT") - 1 ))
 echo "Exported $ROWS entr$([ "$ROWS" = 1 ] && echo y || echo ies) to $OUT"
