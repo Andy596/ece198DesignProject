@@ -1,3 +1,4 @@
 session_log.db
 session_log.db-journal
 exports/
+__pycache__/

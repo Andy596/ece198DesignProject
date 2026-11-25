@@ -1,5 +1,4 @@
-// Host stand-in for the Grove rgb_lcd library: keeps a 16x2 text buffer and
-// logs the screen to stderr whenever it changes.
+// Host stand-in for the Grove rgb_lcd library: keeps a 16x2 text buffer.
 #pragma once
 
 #include <stdint.h>
@@ -12,8 +11,22 @@ class rgb_lcd {
   void setCursor(uint8_t col, uint8_t row);
   void print(const char* text);
   void print(int value);
-  // Simulator only: log the screen if it changed since the last call.
+  void print(unsigned int value);
+  void print(long value);
+  void print(unsigned long value);
+  template <class S, class = decltype(static_cast<const S*>(nullptr)->c_str())>
+  void print(const S& text) {
+    print(text.c_str());
+  }
+
+  // --- Simulator only -------------------------------------------------------
+  // Log the screen to stderr if it changed since the last call.
   void flushToLog();
+  const char* line(int row) const { return screen_[row == 0 ? 0 : 1]; }
+  uint8_t red() const { return r_; }
+  uint8_t green() const { return g_; }
+  uint8_t blue() const { return b_; }
+  unsigned long overflowCount() const { return overflow_; }
 
  private:
   char screen_[2][17];
@@ -22,4 +35,5 @@ class rgb_lcd {
   uint8_t row_ = 0;
   uint8_t r_ = 0, g_ = 0, b_ = 0;
   uint8_t loggedR_ = 1, loggedG_ = 1, loggedB_ = 1;
+  unsigned long overflow_ = 0;
 };
