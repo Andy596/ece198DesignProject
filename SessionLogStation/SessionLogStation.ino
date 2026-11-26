@@ -1,203 +1,475 @@
-// Session Log Station - main sketch (Arduino R4 Minima + Grove RGB LCD).
-//
-// Display/knob code: Andy. Storage + USB transfer (session_log.*): Noah.
-//
-// HOW TO HOOK UP THE INPUT CODE
-//   When the instructor confirms an entry, call:
-//       confirmEntry(participantId, exerciseId, value, techniqueScore);
-//   It stores the entry and shows the result on the LCD. For "undo", call
-//   undoLastEntry(). Everything else (USB sync, status messages) is handled
-//   in loop() by serviceSessionLog().
 #include <Wire.h>
-#include <EEPROM.h>
 #include "rgb_lcd.h"
-#include "session_log.h"
-
-// Set to 0 once real input code creates entries.
-#ifndef SLOG_DEMO_SEED
-#define SLOG_DEMO_SEED 1
-#endif
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
 
 rgb_lcd lcd;
+Adafruit_SSD1306 oled(128, 64, &Wire, -1);
 
-// --- Display lookup tables -------------------------------------------------
-// exerciseId is an index into this list. laptop/schema.sql holds the same
-// list; keep the two in the same order.
-const char* const kExerciseNames[] = {"Squat", "Lunge", "Push-up", "Plank", "Row"};
-const uint8_t kExerciseCount = sizeof kExerciseNames / sizeof kExerciseNames[0];
+struct ExerciseRecord {
+  String name;
+  String exercise;
+  int score;
+};
 
-const int kKnobPin = A2;
-const uint32_t kRefreshMs = 80;
-const uint32_t kMessageMs = 2000;   // how long status messages stay up
-const int kBootCounterAddr = 0;     // EEPROM address of the uint32_t boot counter
-const uint8_t kMaxBytesPerLoop = 64; // bound on serial bytes handled per loop()
+const int maxRecords = 10;
+int recordCount = 3;
 
-int displayedIndex = -2;           // -2 forces a first draw
-uint16_t displayedCount = 0xFFFF;
-uint32_t lastRefreshMs = 0;
-uint32_t messageStartMs = 0;
-bool messageActive = false;
+ExerciseRecord records[maxRecords] = {
+  {"Alex", "Squat", 86},
+  {"Jamie", "Lunge", 92},
+  {"Taylor", "Push-up", 78}
+};
 
-// --- Session log glue ------------------------------------------------------
-void writeToUsb(const char* text, size_t len) {
-  Serial.write(reinterpret_cast<const uint8_t*>(text), len);
-}
+const int leftThreshold = 460;
+const int rightThreshold = 563;
+const int knobMax = 1023;
 
-// Increments a counter in EEPROM so every power-up gets a new boot ID.
-uint32_t nextBootId() {
-  uint32_t boot = 0;
-  EEPROM.get(kBootCounterAddr, boot);  // erased EEPROM reads 0xFFFFFFFF -> wraps to 0
-  ++boot;
-  EEPROM.put(kBootCounterAddr, boot);
-  return boot;
-}
+const unsigned long slowScrollInterval = 600;
+const unsigned long fastScrollInterval = 120;
 
-void showMessage(const char* line1, const char* line2) {
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print(line1);
-  lcd.setCursor(0, 1);
-  lcd.print(line2);
-  messageStartMs = millis();
-  messageActive = true;
-  displayedIndex = -2;  // redraw the entry view when the message expires
-}
+int selectedRecord = 0;
+int scrollDirection = 0;
+unsigned long lastScrollTime = 0;
 
-// Hook for the input code. Returns true if the entry was stored.
-bool confirmEntry(uint16_t participantId, uint8_t exerciseId, int16_t value, uint8_t technique) {
-  if (exerciseId >= kExerciseCount) {
-    showMessage("Unknown exercise", "Not saved");
-    return false;
+// Grove button connected to A0.
+// Pressed = HIGH, released = LOW.
+const int buttonPin = A0;
+const int buttonPressedLevel = HIGH;
+
+// Grove Return button connected to A1, pressed = HIGH.
+const int returnButtonPin = A1;
+int lastReturnReading = LOW;
+int stableReturnReading = LOW;
+unsigned long lastReturnChange = 0;
+
+int lastButtonReading = LOW;
+int stableButtonReading = LOW;
+
+unsigned long lastButtonChange = 0;
+const unsigned long debounceTime = 35;
+
+// New-user keyboard.
+bool addingUser = false;
+
+String fields[3] = {"", "", ""};
+const int fieldLimits[3] = {6, 5, 3};
+int activeField = 0;
+
+// Lowercase letters, numbers, space, and editing controls.
+const char letterKeys[] =
+    "abcdefghijklmnopqrstuvwxyz"
+    "0123456789 -<>^";
+
+const char numberKeys[] = "0123456789<>^";
+
+int selectedKey = 0;
+String editorMessage = "";
+
+bool buttonPressed() {
+  int reading = digitalRead(buttonPin);
+  unsigned long now = millis();
+
+  if (reading != lastButtonReading) {
+    lastButtonChange = now;
+    lastButtonReading = reading;
   }
-  switch (slog::addEntry(participantId, exerciseId, value, technique)) {
-    case slog::Status::Ok:
-      showMessage("Entry saved", "");
-      return true;
-    case slog::Status::Full:
-      lcd.setRGB(255, 0, 0);
-      showMessage("Device full!", "Sync to laptop");
-      return false;
-    case slog::Status::Invalid:
-      showMessage("Invalid entry", "Not saved");
-      return false;
-    default:
-      showMessage("Not saved", "");
-      return false;
-  }
-}
 
-// Hook for an "undo" button.
-bool undoLastEntry() {
-  const slog::Status s = slog::removeLastEntry();
-  if (s == slog::Status::Ok) {
-    showMessage("Last entry", "removed");
-    return true;
+  if (now - lastButtonChange >= debounceTime &&
+      reading != stableButtonReading) {
+    stableButtonReading = reading;
+
+    return stableButtonReading == buttonPressedLevel;
   }
-  showMessage("Can't undo:", s == slog::Status::Empty ? "no entries" : "already synced");
+
   return false;
 }
 
-void serviceSessionLog() {
-  const uint32_t now = millis();
-  for (uint8_t i = 0; i < kMaxBytesPerLoop && Serial.available() > 0; ++i) {
-    const int c = Serial.read();
-    if (c >= 0) {
-      slog::feed(static_cast<char>(c), now);
+bool returnButtonPressed() {
+  int reading = digitalRead(returnButtonPin);
+  unsigned long now = millis();
+
+  if (reading != lastReturnReading) {
+    lastReturnChange = now;
+    lastReturnReading = reading;
+  }
+
+  if (now - lastReturnChange >= debounceTime &&
+      reading != stableReturnReading) {
+    stableReturnReading = reading;
+    return stableReturnReading == HIGH;
+  }
+
+  return false;
+}
+
+const char* currentKeys() {
+  if (activeField == 2) {
+    return numberKeys;
+  }
+
+  return letterKeys;
+}
+
+String entryText() {
+  // The program supplies both commas.
+  return fields[0] + "," + fields[1] + "," + fields[2];
+}
+
+void showNames() {
+  oled.clearDisplay();
+  oled.setTextSize(1);
+  oled.setTextColor(SSD1306_WHITE);
+  oled.setCursor(0, 0);
+
+  if (scrollDirection != 0) {
+    oled.print("CCCare - Scrolling");
+  } else {
+    oled.print("CCCare - Chosen");
+  }
+
+  int menuCount = recordCount + 1;
+  int firstRecord = selectedRecord - 1;
+
+  if (firstRecord < 0) {
+    firstRecord = 0;
+  }
+
+  for (int row = 0; row < 3; row++) {
+    int index = firstRecord + row;
+
+    if (index < menuCount) {
+      oled.setCursor(0, 18 + row * 14);
+
+      if (index == selectedRecord) {
+        oled.print("> ");
+      } else {
+        oled.print("  ");
+      }
+
+      if (index == recordCount) {
+        oled.print("+ Add user");
+      } else {
+        oled.print(records[index].name);
+      }
     }
   }
-  slog::poll(now);
 
-  char line2[17];
-  switch (slog::takeEvent()) {
-    case slog::Event::SyncStarted:
-      lcd.setRGB(0, 0, 255);
-      showMessage("Syncing...", "");
-      break;
-    case slog::Event::SyncConfirmed:
-      lcd.setRGB(0, 255, 0);
-      snprintf(line2, sizeof line2, "%u saved", static_cast<unsigned>(slog::lastSyncCount()));
-      showMessage("Sync complete", line2);
-      break;
-    case slog::Event::SyncTimedOut:
-      lcd.setRGB(255, 128, 0);
-      showMessage("Sync failed", "Try again");
-      break;
-    case slog::Event::ProtocolError:
-    case slog::Event::None:
-    default:
-      break;
+  oled.display();
+}
+
+void showScore() {
+  lcd.clear();
+  lcd.setCursor(0, 0);
+
+  if (selectedRecord == recordCount) {
+    lcd.print("Add user");
+    lcd.setCursor(0, 1);
+
+    if (recordCount >= maxRecords) {
+      lcd.print("User list full");
+    } else if (scrollDirection != 0) {
+      lcd.print("Selecting...");
+    } else {
+      lcd.print("Press to add");
+    }
+
+    return;
+  }
+
+  lcd.print(records[selectedRecord].name);
+  lcd.setCursor(0, 1);
+
+  if (scrollDirection != 0) {
+    lcd.print("Selecting...");
+  } else {
+    lcd.print(records[selectedRecord].exercise);
+    lcd.print(" ");
+    lcd.print(records[selectedRecord].score);
+    lcd.print("/100");
   }
 }
 
-// --- Andy's entry view (knob scrolls through entries on the device) ---------
-void drawEntryView() {
-  const uint16_t count = slog::entryCount();
-  if (count == 0) {
-    if (displayedIndex != -1) {
-      lcd.clear();
-      lcd.print("No entries");
-      displayedIndex = -1;
+void showKeyboard() {
+  const char* keys = currentKeys();
+  int keyCount = strlen(keys);
+  char key = keys[selectedKey];
+
+  oled.clearDisplay();
+  oled.setTextSize(1);
+  oled.setTextColor(SSD1306_WHITE);
+  oled.setCursor(0, 0);
+
+  if (activeField == 0) {
+    oled.print("Enter name");
+  } else if (activeField == 1) {
+    oled.print("Enter exercise");
+  } else {
+    oled.print("Enter score");
+  }
+
+  oled.setCursor(0, 12);
+  oled.print(entryText());
+
+  // Show five keys with the selected key in the middle.
+  for (int position = 0; position < 5; position++) {
+    int index =
+        (selectedKey + position - 2 + keyCount) % keyCount;
+
+    int x = position * 25;
+
+    if (position == 2) {
+      oled.fillRect(x, 26, 23, 20, SSD1306_WHITE);
+      oled.setTextColor(SSD1306_BLACK);
+    } else {
+      oled.setTextColor(SSD1306_WHITE);
     }
-    return;
+
+    oled.setTextSize(2);
+    oled.setCursor(x + 5, 28);
+    oled.print(keys[index]);
   }
-  const int knob = analogRead(kKnobPin);  // 0..1023 (10-bit default)
-  const int selected = static_cast<int>(static_cast<long>(knob) * count / 1024L);
-  if (selected == displayedIndex && count == displayedCount) {
-    return;
+
+  oled.setTextSize(1);
+  oled.setTextColor(SSD1306_WHITE);
+  oled.setCursor(0, 53);
+
+  if (editorMessage.length() > 0) {
+    oled.print(editorMessage);
+  } else if (key == '<') {
+    oled.print("Button: delete");
+  } else if (key == '>') {
+    if (activeField == 2) {
+      oled.print("Button: save user");
+    } else {
+      oled.print("Button: next field");
+    }
+  } else if (key == '^') {
+    oled.print("Button: cancel");
+  } else if (key == ' ') {
+    oled.print("Button: enter space");
+  } else {
+    oled.print("Button: enter ");
+    oled.print(key);
   }
-  slog::Entry e;
-  if (slog::getEntry(static_cast<uint16_t>(selected), e) != slog::Status::Ok) {
-    return;
-  }
-  char line1[17];
-  char line2[17];
-  const char* ex = (e.exerciseId < kExerciseCount) ? kExerciseNames[e.exerciseId] : "?";
-  snprintf(line1, sizeof line1, "P%u %s", static_cast<unsigned>(e.participantId),
-           e.synced ? "synced" : "");
-  snprintf(line2, sizeof line2, "%s %d T%u", ex, static_cast<int>(e.value),
-           static_cast<unsigned>(e.technique));
+
+  oled.display();
+
   lcd.clear();
   lcd.setCursor(0, 0);
-  lcd.print(line1);
+
+  if (activeField == 0) {
+    lcd.print("Enter name");
+  } else if (activeField == 1) {
+    lcd.print("Enter exercise");
+  } else {
+    lcd.print("Enter score");
+  }
+
   lcd.setCursor(0, 1);
-  lcd.print(line2);
-  displayedIndex = selected;
-  displayedCount = count;
+  lcd.print(entryText());
+}
+
+void startAddingUser() {
+  addingUser = true;
+  activeField = 0;
+  selectedKey = 0;
+  editorMessage = "";
+
+  for (int i = 0; i < 3; i++) {
+    fields[i] = "";
+  }
+
+  showKeyboard();
+}
+
+void finishEditing() {
+  addingUser = false;
+  showNames();
+  showScore();
+}
+
+void enterKey() {
+  char key = currentKeys()[selectedKey];
+  editorMessage = "";
+
+  if (key == '^') {
+    finishEditing();
+    return;
+  }
+
+  if (key == '<') {
+    if (fields[activeField].length() > 0) {
+      fields[activeField].remove(
+          fields[activeField].length() - 1);
+    } else if (activeField > 0) {
+      activeField--;
+      selectedKey = 0;
+    }
+  } else if (key == '>') {
+    fields[activeField].trim();
+
+    if (fields[activeField].length() == 0) {
+      editorMessage = "Field is empty";
+    } else if (activeField < 2) {
+      activeField++;
+      selectedKey = 0;
+    } else {
+      int score = fields[2].toInt();
+
+      if (score > 100) {
+        editorMessage = "Score must be 0-100";
+      } else if (recordCount >= maxRecords) {
+        editorMessage = "User list full";
+      } else {
+        records[recordCount].name = fields[0];
+        records[recordCount].exercise = fields[1];
+        records[recordCount].score = score;
+
+        selectedRecord = recordCount;
+        recordCount++;
+
+        finishEditing();
+        return;
+      }
+    }
+  } else {
+    if (fields[activeField].length() <
+        fieldLimits[activeField]) {
+
+      // Capitalize the first letter of each name word.
+      if (activeField == 0) {
+        int length = fields[0].length();
+        bool startOfWord = length == 0;
+
+        if (length > 0) {
+          startOfWord = fields[0][length - 1] == ' ';
+        }
+
+        if (startOfWord && key >= 'a' && key <= 'z') {
+          key = key - 'a' + 'A';
+        }
+      }
+
+      fields[activeField] += key;
+    } else {
+      editorMessage = "Limit reached: use >";
+    }
+  }
+
+  showKeyboard();
 }
 
 void setup() {
-  Serial.begin(115200);
+  pinMode(buttonPin, INPUT);
+  pinMode(returnButtonPin, INPUT);
+  lastReturnReading = digitalRead(returnButtonPin);
+  stableReturnReading = lastReturnReading;
+
+  lastButtonReading = digitalRead(buttonPin);
+  stableButtonReading = lastButtonReading;
+
+  Wire.begin();
+
   lcd.begin(16, 2);
   lcd.setRGB(255, 255, 255);
-  slog::begin(nextBootId(), writeToUsb);
 
-#if SLOG_DEMO_SEED
-  // Fictional demo data (participant IDs, not names).
-  confirmEntry(101, 0, 12, 86);  // Squat x12, technique 86
-  confirmEntry(102, 1, 10, 92);  // Lunge x10
-  confirmEntry(103, 2, 8, 78);   // Push-up x8
-#endif
+  oled.begin(SSD1306_SWITCHCAPVCC, 0x3C);
+  oled.setTextWrap(false);
+
+  showNames();
+  showScore();
 }
 
 void loop() {
-  serviceSessionLog();
+  // This potentiometer's raw reading decreases to the right.
+  int knob = knobMax - analogRead(A2);
+  unsigned long now = millis();
+  bool pressed = buttonPressed();
+  bool returnPressed = returnButtonPressed();
 
-  const uint32_t now = millis();
-  if (now - lastRefreshMs < kRefreshMs) {
-    return;
+  int direction = 0;
+  unsigned long interval = slowScrollInterval;
+
+  // Left moves up, centre holds, and right moves down.
+  if (knob < leftThreshold) {
+    direction = -1;
+
+    interval = map(
+        knob,
+        leftThreshold - 1,
+        0,
+        slowScrollInterval,
+        fastScrollInterval
+    );
+  } else if (knob > rightThreshold) {
+    direction = 1;
+
+    interval = map(
+        knob,
+        rightThreshold + 1,
+        knobMax,
+        slowScrollInterval,
+        fastScrollInterval
+    );
   }
-  lastRefreshMs = now;
 
-  // Keep a status message up for a moment, then go back to the entry view.
-  // (Unsigned subtraction stays correct when millis() wraps.)
-  if (messageActive) {
-    if (now - messageStartMs < kMessageMs) {
+  bool directionChanged = direction != scrollDirection;
+  scrollDirection = direction;
+
+  // Move immediately on a direction change, then repeat.
+  bool shouldStep = direction != 0 &&
+      (directionChanged || now - lastScrollTime >= interval);
+
+  if (shouldStep) {
+    lastScrollTime = now;
+  }
+
+  if (addingUser) {
+    // Return cancels from any field, even while the knob is moving.
+    // Handle Return before Enter so an unfinished record cannot be saved.
+    if (returnPressed) {
+      for (int i = 0; i < 3; i++) {
+        fields[i] = "";
+      }
+      editorMessage = "";
+      finishEditing();
       return;
     }
-    messageActive = false;
-    if (!slog::awaitingAck()) {
-      lcd.setRGB(255, 255, 255);
+
+    if (shouldStep) {
+      int keyCount = strlen(currentKeys());
+
+      selectedKey =
+          (selectedKey + direction + keyCount) % keyCount;
+
+      editorMessage = "";
+      showKeyboard();
+    }
+
+    if (pressed && direction == 0) {
+      enterKey();
+    }
+  } else {
+    if (shouldStep) {
+      int menuCount = recordCount + 1;
+
+      selectedRecord =
+          (selectedRecord + direction + menuCount) % menuCount;
+    }
+
+    if (directionChanged || shouldStep) {
+      showNames();
+      showScore();
+    }
+
+    if (pressed &&
+        direction == 0 &&
+        selectedRecord == recordCount &&
+        recordCount < maxRecords) {
+      startAddingUser();
     }
   }
-  drawEntryView();
+
+  delay(20);
 }
